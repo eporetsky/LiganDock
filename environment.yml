@@ -1,0 +1,25 @@
+# conda env create -f environment.yml
+name: ligandock
+channels:
+  - anaconda
+  - conda-forge
+  - bioconda
+dependencies:
+  - anaconda
+  - python=3.12.2
+  - numpy
+  - scipy
+  - pandas
+  - rdkit
+  - openbabel
+  - pdb2pqr
+  - vina
+  - autogrid
+  - swig
+  - boost-cpp
+  - libboost
+  - sphinx
+  - sphinx_rtd_theme
+  - pip
+  - pip:
+    - meeko==0.5.0
