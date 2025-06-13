@@ -9,6 +9,8 @@ import glob
 import argparse
 import shutil
 from openbabel import openbabel
+import numpy as np
+from modules.pykvfinder import pykvfinder_pdb, calculate_docking_box, generate_box_pdb
 
 def prepare_ligand(smiles_string):
     """Prepare ligand from SMILES string and return PDBQT string."""
@@ -39,6 +41,59 @@ def convert_to_sdf(input_file, output_file):
         obconversion.WriteFile(mol, output_file)
         return True
     return False
+
+def get_residue_centroid(pdb_file, residue_specs):
+    """Get centroid coordinates from specified residues in PDB file."""
+    try:
+        all_coords = []
+        
+        with open(pdb_file, 'r') as f:
+            lines = f.readlines()
+        
+        for res_spec in residue_specs:
+            # Parse residue specification (e.g., "A:123" or "123" for any chain)
+            if ':' in res_spec:
+                chain_id, res_num = res_spec.split(':')
+                res_num = int(res_num)
+            else:
+                chain_id = None
+                res_num = int(res_spec)
+            
+            # Find atoms for this residue
+            res_coords = []
+            for line in lines:
+                if line.startswith(('ATOM', 'HETATM')):
+                    pdb_chain = line[21].strip()
+                    pdb_res_num = int(line[22:26].strip())
+                    
+                    # Check if this atom belongs to our target residue
+                    if pdb_res_num == res_num:
+                        if chain_id is None or pdb_chain == chain_id:
+                            x = float(line[30:38].strip())
+                            y = float(line[38:46].strip())
+                            z = float(line[46:54].strip())
+                            res_coords.append([x, y, z])
+            
+            if not res_coords:
+                print(f"Warning: No atoms found for residue {res_spec}")
+                continue
+            
+            # Add residue centroid to all coordinates
+            res_centroid = np.mean(res_coords, axis=0)
+            all_coords.append(res_centroid)
+            print(f"  Residue {res_spec} centroid: {res_centroid}")
+        
+        if not all_coords:
+            print("Error: No valid residues found")
+            return None
+        
+        # Calculate geometric mean of all residue centroids
+        geometric_center = np.mean(all_coords, axis=0)
+        return geometric_center.tolist()
+        
+    except Exception as e:
+        print(f"Error processing residues: {str(e)}")
+        return None
 
 def get_marker_centroid(marker_file):
     """Get centroid coordinates from marker file (PDB or SDF)."""
@@ -125,7 +180,13 @@ def main():
     parser = argparse.ArgumentParser(description='Run AutoDock Vina docking with SMILES ligand and PDB proteins.')
     parser.add_argument('--smiles', required=True, nargs='+', help='SMILES string(s) of the ligand(s)')
     parser.add_argument('--pdb_folder', required=True, help='Folder containing PDB files')
-    parser.add_argument('--marker_file', required=True, help='PDB or SDF file containing marker molecule for docking box center')
+    
+    # Create mutually exclusive group for box center definition
+    box_group = parser.add_mutually_exclusive_group(required=True)
+    box_group.add_argument('--marker_file', help='PDB or SDF file containing marker molecule for docking box center')
+    box_group.add_argument('--res_box', nargs='+', help='Residue specifications for docking box center (e.g., "A:123" "B:456" or "123" "456")')
+    box_group.add_argument('--pykvfinder_box', help='Residue specification for PyKVFinder box (e.g., A202)')
+    
     parser.add_argument('--output_folder', required=True, help='Output folder for docking results')
     parser.add_argument('--ligand_name', nargs='*', help='Name(s) of the ligand(s) (optional, will be added to output filenames)')
     parser.add_argument('--exhaustiveness', type=int, default=16, help='Docking exhaustiveness (default: 1000)')
@@ -145,14 +206,6 @@ def main():
     # Create output folder and tmp folder
     os.makedirs(args.output_folder, exist_ok=True)
     os.makedirs("tmp", exist_ok=True)
-    
-    # Get marker centroid
-    centroid = get_marker_centroid(args.marker_file)
-    if centroid is None:
-        print("Error: Could not process marker file. Exiting.")
-        return
-    
-    print(f"Docking box center: {centroid}")
     
     # Prepare ligands
     ligand_data = []
@@ -191,6 +244,37 @@ def main():
             # Clean tmp folder for this iteration
             cleanup_temp_files()
             
+            # Determine docking box center and size
+            if args.pykvfinder_box:
+                chain_id = args.pykvfinder_box[0]
+                residue_number = int(args.pykvfinder_box[1:])
+                pykvf_pdb = os.path.join(args.output_folder, f"{prot_id}.pykvf.pdb")
+                pykvfinder_pdb(chain_id, residue_number, prot_fl, pykvf_pdb)
+                min_coords, max_coords, centroid, box_size = calculate_docking_box(pykvf_pdb, padding=0)
+                if min_coords is None or max_coords is None:
+                    print(f"  Error: Could not calculate docking box for {prot_id}. Skipping.")
+                    continue
+                args.box_size = box_size
+                box_pdb = os.path.join(args.output_folder, f"{prot_id}.box.pdb")
+                generate_box_pdb(centroid, box_size, box_pdb)
+            elif args.marker_file:
+                centroid = get_marker_centroid(args.marker_file)
+                box_size = args.box_size
+                if centroid is None:
+                    print(f"  Error: Could not process marker file for {prot_id}. Skipping.")
+                    continue
+            else:  # args.res_box
+                centroid = get_residue_centroid(prot_fl, args.res_box)
+                box_size = args.box_size
+                if centroid is None:
+                    print(f"  Error: Could not process residues for {prot_id}. Skipping.")
+                    continue
+            
+            print(f"  Docking box center for {prot_id}: {centroid}")
+            print(f"  Docking box size for {prot_id}: {box_size}")
+        
+            #break
+
             # Create output filename
             output_name = os.path.join(args.output_folder, prot_id.replace(".pdb", f".{ligand_suffix}.pdbqt"))
                 
@@ -219,7 +303,7 @@ def main():
             v.set_receptor("tmp/receptor.pdbqt")
             
             # Set multiple ligands
-            #for ligand_file in ligand_files:
+            print(f"Setting ligands: {ligand_files}")
             v.set_ligand_from_file(ligand_files)
             
             v.compute_vina_maps(center=centroid, box_size=args.box_size)
