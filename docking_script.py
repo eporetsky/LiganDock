@@ -11,6 +11,7 @@ import shutil
 from openbabel import openbabel
 import numpy as np
 from modules.pykvfinder import pykvfinder_pdb, calculate_docking_box, generate_box_pdb
+import subprocess
 
 def prepare_ligand(smiles_string):
     """Prepare ligand from SMILES string and return PDBQT string."""
@@ -127,54 +128,74 @@ def get_marker_centroid(marker_file):
             os.remove("tmp/temp_marker.sdf")
 
 def prepare_receptor(prot_fl, use_fallback=False):
-    """Prepare receptor using Meeko or fallback to prepare_receptor4.py."""
+    """Prepare receptor using Meeko only."""
     try:
-        # First try pdb2pqr + Meeko
-        if not use_fallback:
-            print("  Trying Meeko receptor preparation...")
-            os.system(f"pdb2pqr --ffout AMBER --keep-chain {prot_fl} tmp/receptor.pdbqr 2>/dev/null")
-            if os.path.exists("tmp/receptor.pdbqr"):  # pdb2pqr succeeded
-                os.system("mk_prepare_receptor.py --pdb tmp/receptor.pdbqr -o tmp/receptor.pdbqt --skip_gpf 2>/dev/null")
-                if os.path.exists("tmp/receptor.pdbqt"):
-                    print("  Meeko receptor preparation successful")
-                    return True
-        
-        # Fallback: try prepare_receptor4.py directly on PDB
-        print("  Trying prepare_receptor4.py fallback...")
-        os.system(f"prepare_receptor4.py -r {prot_fl} -o tmp/receptor.pdbqt 2>/dev/null")
+        # Use mk_prepare_receptor.py directly on the PDB file
+        print("  Trying mk_prepare_receptor.py receptor preparation...")
+        print(f"mk_prepare_receptor.py --read_pdb {prot_fl} -o tmp/receptor -p -a")
+        os.system(f"mk_prepare_receptor.py --read_pdb {prot_fl} -o tmp/receptor -p -a")
         if os.path.exists("tmp/receptor.pdbqt"):
-            print("  prepare_receptor4.py successful")
+            print("  mk_prepare_receptor.py receptor preparation successful")
             return True
-            
-        # If both fail, try OpenBabel conversion + prepare_receptor4.py
-        print("  Trying OpenBabel + prepare_receptor4.py...")
-        # Convert PDB to MOL2 using OpenBabel (sometimes cleans up formatting)
-        obconversion = openbabel.OBConversion()
-        obconversion.SetInAndOutFormats("pdb", "mol2")
-        mol = openbabel.OBMol()
-        if obconversion.ReadFile(mol, prot_fl):
-            obconversion.WriteFile(mol, "tmp/temp_receptor.mol2")
-            # Convert back to PDB
-            obconversion.SetInAndOutFormats("mol2", "pdb")
-            mol2 = openbabel.OBMol()
-            if obconversion.ReadFile(mol2, "tmp/temp_receptor.mol2"):
-                obconversion.WriteFile(mol2, "tmp/temp_receptor.pdb")
-                os.system("prepare_receptor4.py -r tmp/temp_receptor.pdb -o tmp/receptor.pdbqt 2>/dev/null")
-                if os.path.exists("tmp/receptor.pdbqt"):
-                    print("  OpenBabel + prepare_receptor4.py successful")
-                    return True
-        
         return False
-        
     except Exception as e:
         print(f"  Error in receptor preparation: {str(e)}")
         return False
+
+def prepare_flexible_receptor(prot_fl, flex_res_list, box_center, box_size, output_prefix="tmp/receptor"):
+    """
+    Prepare rigid and flexible receptor PDBQT files using Meeko's mk_prepare_receptor.py.
+    Returns (rigid_pdbqt, flex_pdbqt, box_txt) if successful, else (None, None, None).
+    """
+    try:
+        flex_args = " ".join([f"-f {res}" for res in flex_res_list])
+        cmd = (
+            f"mk_prepare_receptor.py --read_pdb {prot_fl} -o {output_prefix} -p"
+            f"--box_size {box_size[0]} {box_size[1]} {box_size[2]} "
+            f"--box_center {box_center[0]} {box_center[1]} {box_center[2]} "
+            f"{flex_args}"
+        )
+        print(f"  Running: {cmd}")
+        subprocess.run(cmd, shell=True)
+        rigid_pdbqt = f"{output_prefix}_rigid.pdbqt"
+        flex_pdbqt = f"{output_prefix}_flex.pdbqt"
+        box_txt = f"{output_prefix}.box.txt"
+        if os.path.exists(rigid_pdbqt) and os.path.exists(flex_pdbqt) and os.path.exists(box_txt):
+            return rigid_pdbqt, flex_pdbqt, box_txt
+        else:
+            print("  Flexible receptor preparation failed.")
+            return None, None, None
+    except Exception as e:
+        print(f"  Error in flexible receptor preparation: {str(e)}")
+        return None, None, None
 
 def cleanup_temp_files():
     """Remove temporary files."""
     if os.path.exists("tmp"):
         shutil.rmtree("tmp")
     os.makedirs("tmp", exist_ok=True)
+
+def prepare_ligand_with_scrubber(smiles_string, ligand_name, tmp_dir="tmp"):
+    """
+    Prepare ligand using scrub.py and mk_prepare_ligand.py from a SMILES string.
+    Returns the path to the generated PDBQT file (always {ligand_name}_protomer-1.pdbqt).
+    """
+    os.makedirs(tmp_dir, exist_ok=True)
+    sdf_file = os.path.join(tmp_dir, f"{ligand_name}.sdf")
+    # 1. Use scrub.py to generate SDF
+    scrub_cmd = f'scrub.py "{smiles_string}" -o {sdf_file} --ff "mmff94" --skip_tautomers --skip_acidbase --ph 7'
+    print(f"Running: {scrub_cmd}")
+    subprocess.run(scrub_cmd, shell=True, check=True)
+    # 2. Use mk_prepare_ligand.py to generate PDBQT
+    pdbqt_prefix = os.path.join(tmp_dir, f"{ligand_name}_protomer")
+    mk_lig_cmd = f"mk_prepare_ligand.py -i {sdf_file} --multimol_prefix {pdbqt_prefix}"
+    print(f"Running: {mk_lig_cmd}")
+    subprocess.run(mk_lig_cmd, shell=True, check=True)
+    # Always use the -1 protomer file
+    pdbqt_file = os.path.join(tmp_dir, f"{ligand_name}_protomer-1.pdbqt")
+    if os.path.exists(pdbqt_file):
+        return pdbqt_file
+    raise FileNotFoundError(f"Expected PDBQT file not found: {pdbqt_file}")
 
 def main():
     parser = argparse.ArgumentParser(description='Run AutoDock Vina docking with SMILES ligand and PDB proteins.')
@@ -189,15 +210,18 @@ def main():
     
     parser.add_argument('--output_folder', required=True, help='Output folder for docking results')
     parser.add_argument('--ligand_name', nargs='*', help='Name(s) of the ligand(s) (optional, will be added to output filenames)')
-    parser.add_argument('--exhaustiveness', type=int, default=16, help='Docking exhaustiveness (default: 1000)')
+    parser.add_argument('--exhaustiveness', type=int, default=64, help='Docking exhaustiveness (default: 1000)')
     parser.add_argument('--n_poses', type=int, default=20, help='Number of poses to generate (default: 20)')
     parser.add_argument('--box_size', type=float, nargs=3, default=[15, 15, 15], 
                       help='Docking box size in Angstroms (default: 12 12 12)')
     parser.add_argument('--use_fallback', action='store_true', 
                       help='Skip Meeko and use prepare_receptor4.py directly')
+    parser.add_argument('--flex_res', nargs='+', help='Flexible residue specifications (e.g., "A:315" "B:123")')
     
     args = parser.parse_args()
     
+    cleanup_temp_files()
+
     # Validate ligand names if provided
     if args.ligand_name and len(args.ligand_name) != len(args.smiles):
         print(f"Error: Number of ligand names ({len(args.ligand_name)}) must match number of SMILES ({len(args.smiles)})")
@@ -207,16 +231,11 @@ def main():
     os.makedirs(args.output_folder, exist_ok=True)
     os.makedirs("tmp", exist_ok=True)
     
-    # Prepare ligands
+    # Prepare ligands using new workflow
     ligand_data = []
     for i, smiles in enumerate(args.smiles):
-        lig_pdbqt = prepare_ligand(smiles)
         ligand_name = args.ligand_name[i] if args.ligand_name else f"lig{i+1}"
-        ligand_file = f"tmp/ligand_{ligand_name}.pdbqt"
-        
-        with open(ligand_file, 'w') as f:
-            f.write(lig_pdbqt)
-        
+        ligand_file = prepare_ligand_with_scrubber(smiles, ligand_name, tmp_dir="tmp")
         ligand_data.append({
             'name': ligand_name,
             'file': ligand_file,
@@ -242,7 +261,6 @@ def main():
             print(f"Processing {prot_id}")
             
             # Clean tmp folder for this iteration
-            cleanup_temp_files()
             
             # Determine docking box center and size
             if args.pykvfinder_box:
@@ -282,31 +300,40 @@ def main():
                 print(f"Skipping {prot_id} - already processed")
                 continue
             
-            # Prepare receptor with fallback options
-            if not prepare_receptor(prot_fl, args.use_fallback):
-                print(f"  Failed to prepare receptor for {prot_id}")
-                continue
+            # If flexible residues are specified, prepare flexible receptor
+            if args.flex_res:
+                rigid_pdbqt, flex_pdbqt, box_txt = prepare_flexible_receptor(
+                    prot_fl, args.flex_res, centroid, box_size, output_prefix="tmp/receptor"
+                )
+                if not (rigid_pdbqt and flex_pdbqt and box_txt):
+                    print(f"  Failed to prepare flexible receptor for {prot_id}")
+                    continue
+                receptor_file = rigid_pdbqt
+                flex_file = flex_pdbqt
+                config_file = box_txt
+            else:
+                # Fallback to original receptor preparation
+                if not prepare_receptor(prot_fl):
+                    print(f"  Failed to prepare receptor for {prot_id}")
+                    continue
+                receptor_file = "tmp/receptor.pdbqt"
+                flex_file = None
+                config_file = None
             
             # Recreate ligand files in clean tmp folder
-            ligand_files = []
-            for ligand in ligand_data:
-                lig_pdbqt = prepare_ligand(ligand['smiles'])
-                ligand_file = f"tmp/ligand_{ligand['name']}.pdbqt"
-                
-                with open(ligand_file, 'w') as f:
-                    f.write(lig_pdbqt)
-                
-                ligand_files.append(ligand_file)
+            ligand_files = [ligand['file'] for ligand in ligand_data]
             
             # Run docking with multiple ligands
             v = Vina(sf_name='vina', verbosity=0)
-            v.set_receptor("tmp/receptor.pdbqt")
-            
-            # Set multiple ligands
+            v.set_receptor(receptor_file)
+            if flex_file:
+                v.set_flex(flex_file)
             print(f"Setting ligands: {ligand_files}")
             v.set_ligand_from_file(ligand_files)
-            
-            v.compute_vina_maps(center=centroid, box_size=args.box_size)
+            if flex_file and config_file:
+                v.compute_vina_maps(config=config_file)
+            else:
+                v.compute_vina_maps(center=centroid, box_size=args.box_size)
             v.dock(exhaustiveness=args.exhaustiveness, n_poses=args.n_poses)
             v.write_poses(output_name, overwrite=True, n_poses=args.n_poses)
             
