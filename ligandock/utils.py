@@ -1,16 +1,12 @@
 # conda activate lig
 
-import os
-import glob
-import pandas as pd
 import pyKVFinder
 import warnings
 from openbabel import pybel
-import argparse
 import numpy as np
 warnings.filterwarnings('ignore')
-
 from openbabel import pybel
+
 def sdf_to_pdb(sdf_file, pdb_file):
     # Load the SDF file
     molecules = pybel.readfile("sdf", sdf_file)
@@ -23,18 +19,8 @@ def sdf_to_pdb(sdf_file, pdb_file):
 
 residues_df = []
 
-os.makedirs("pykvfinder", exist_ok=True)
-
-#for fl in glob.glob("structures_aln/*.pdb"):
-fl = "backup/H26B_NB.pdb"
-file_name = os.path.basename(fl)
-
-print("Starting to process:", file_name)
-
-out_pdb = os.path.join("pykvfinder", file_name)
-
 def pykvfinder_pdb(chain_id, residue_number, input_pdb, output_pdb):
-    """Generate a PDB file for the specified residue using PyKVFinder and save to output_folder."""
+    print(f"Generating PDB file for residue {chain_id}{residue_number} ({input_pdb}) at {output_pdb}")
     mol = next(pybel.readfile("pdb", input_pdb))
     residue_atoms = [atom for atom in mol if atom.OBAtom.GetResidue().GetNum() == residue_number and atom.OBAtom.GetResidue().GetChain() == chain_id]
     residue_mol = pybel.Molecule(pybel.ob.OBMol())

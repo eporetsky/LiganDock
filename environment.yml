@@ -1,29 +1,21 @@
-# conda env create -f environment.yml
 name: ligandock
 channels:
   #- anaconda
   - conda-forge
   - bioconda
 dependencies:
-  - anaconda
-  - python==3.9
-  - numpy
-  - cctbx-base
-  - gemmi
-  - scipy
-  - pandas
-  #- rdkit
-  - openbabel
-  #- pdb2pqr
-  - vina
-  #- autogrid
-  #- swig
-  #- boost-cpp
-  #- libboost
-  - meeko
+  - python==3.9.23
+  - openbabel==3.1.1
   - pip
   - pip:
-    #- meeko
-    #- numpy
-    - pyKVFinder
+    - click
+    - gemmi==0.6.6
+    - vina==1.2.5
+    - pyKVFinder==0.6.16
+    - rdkit==2025.03.3
+    - scipy==1.13.1
+    - pandas==2.3.0
+    - numpy==1.26.4
+    - meeko==0.6.1
     - git+https://github.com/forlilab/scrubber.git
+    - -e .

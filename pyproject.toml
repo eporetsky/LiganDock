@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ligandock"
+version = "0.1.0"
+description = "Ligand docking CLI toolkit"
+authors = [{name = "Your Name", email = "your@email.com"}]
+readme = "README.md"
+
+[project.scripts]
+ligandock = "ligandock.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["ligandock*"]
+exclude = ["tmp*"]
